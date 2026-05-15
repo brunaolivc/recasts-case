@@ -1,2 +1,11 @@
+*.csv
 data/*.csv
-venv/*
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+outputs/*.png
+build_notebook.py
+teste.ipynb
+.ipynb_checkpoints/
+*.html
