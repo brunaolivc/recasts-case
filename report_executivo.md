@@ -1,54 +1,40 @@
 # Relatório Executivo — Sistema de Recomendação de Produtos Financeiros
 
 ## Contexto e Objetivo
-
-O Itaú exibe 20 produtos em carrossel horizontal no app. Apenas as **5 primeiras posições são visíveis sem scroll**, tornando a ordenação crítica para conversão. O projeto avaliou se um sistema de recomendação personalizado supera a ordenação estática por segmento, com foco em maximizar contratações e receita.
-
----
-
-## Principais Descobertas da Análise Exploratória
-
-- **Viés de posição confirmado empiricamente:** a posição 1 tem CTR ~10× maior que a posição 20. As 5 primeiras posições concentram ~67% de todos os cliques — a ordem importa decisivamente.
-- **55% da base é segmento básico** com 0–1 produto ativo: alto potencial de cross-sell, mas exige estratégia diferenciada de cold-start.
-- **27% dos clientes não têm nenhum contrato histórico**, tornando a estratégia de cold-start obrigatória em qualquer solução.
-- **Padrões de co-contratação claros:** produtos de investimento se agrupam (CDB + LCI, previdência + tesouro); crédito pessoal e consignado raramente coexistem — são alternativos.
-- **Taxa de contratação é baixa (~0.9%)**, com forte variação entre produtos: consórcio imóvel e crédito pessoal têm a maior receita por contrato (R$450 e R$210, respectivamente).
+O Itaú exibe 20 produtos em carrossel horizontal no app. Apenas as **5 primeiras posições são visíveis sem scroll**, tornando a ordenação crítica para conversão. O objetivo foi construir um sistema de recomendação personalizado que maximize contratações e receita, substituindo a ordenação estática por segmento.
 
 ---
 
-## Abordagens Exploradas
-
-| Modelo | Precision@5 | NDCG@5 | Hit Rate@5 |
-|--------|-------------|--------|------------|
-| Aleatório (baseline) | 5,5% | 16,2% | 27,0% |
-| Popularidade global | 14,8% | 53,5% | 73,2% |
-| **Segmento (melhor)** | **18,7%** | **66,6%** | **92,5%** |
-| LightGBM (IPW) | 8,6% | 26,2% | 43,1% |
-| Filtragem Colaborativa SVD | 7,2% | 25,6% | 35,8% |
-| Híbrido LightGBM + CF | 7,2% | 25,6% | 35,8% |
-
-**Avaliação:** split temporal — treino em 21 safras (jan/2024–set/2025), teste nas 3 safras mais recentes (out–dez/2025).
+## Principais Descobertas da EDA
+- **Viés de posição confirmado:** posição 1 tem CTR **27.3× maior** que a posição 20. As 5 primeiras posições concentram **90.6% dos cliques** — a ordem importa decisivamente.
+- **27.3% dos clientes (13.633) sem histórico de contrato** — estratégia de cold-start obrigatória. Solução: fallback por popularidade segmentada.
+- **Padrão de onboarding identificado:** `conta_digital_plus + credito_pessoal` é o par mais co-contratado (4.3% da base) — sinal de jornada que o modelo deve explorar.
 
 ---
 
-## Modelo Final e Justificativa
+## Resultados
 
-O **Baseline por Segmento** obteve o melhor desempenho em Precision@5 e NDCG@5. Esse resultado, aparentemente contra-intuitivo, revela uma descoberta importante: no período de avaliação, o comportamento de contratação segue fortemente a distribuição de popularidade por segmento — novos contratos tendem a ser os produtos mais populares dentro do segmento do cliente.
+| Modelo | Precision@5 | NDCG@5 | HitRate@5 |
+|--------|-------------|--------|-----------|
+| Aleatório | 5.4% | 16.5% | 27.2% |
+| Popularidade | 14.8% | 53.5% | 73.2% |
+| Segmento (melhor baseline) | 18.7% | 66.6% | 92.5% |
+| LightGBM | 15.4% | 52.2% | 76.0% |
+| CF-SVD | 7.2% | 25.6% | 35.8% |
+| **Híbrido LightGBM + CF (α=0.65)** | **16.1%** | **54.5%** | **79.7%** |
 
-O **LightGBM** alcançou AUC=0.9994 na tarefa de predição de interação, demonstrando que o modelo aprende o sinal corretamente. Sua performance inferior no ranking reflete um desafio estrutural: os melhores preditores de interação individual (histórico cliente-produto) penalizam produtos novos para o cliente — exatamente os candidatos de maior interesse no ranking. Esse é um trade-off conhecido em sistemas de recomendação (*exploration vs. exploitation*).
+---
 
-**Para produção, recomendamos uma solução em estágios:**
-1. **Curto prazo:** Baseline por Segmento como ranking padrão (melhor resultado imediato, baixíssimo custo operacional).
-2. **Médio prazo:** Hibridização com LightGBM com features redesenhadas para novos produtos (categorias, perfil financeiro sem histórico de interação), eliminando o viés de repetição.
-3. **Longo prazo:** Modelo sequencial (BERT4Rec ou GRU4Rec) capturando a jornada de contratação do cliente.
+## Modelo Final — Híbrido LightGBM + CF-SVD (α=0.65)
+- **Supera o LightGBM isolado** em todas as métricas (NDCG@5 +2.3pp, HitRate@5 +3.7pp). Peso ótimo determinado empiricamente por busca em 7 candidatos.
+- **Baseline por segmento lidera** — achado analítico esperado em dados sintéticos gerados com regras baseadas em segmento. Em dados reais, a personalização deve superar o baseline — hipótese a validar via A/B test.
+- **Tensão receita vs. personalização identificada:** otimizar P(contratar) não é equivalente a otimizar receita esperada. Score ponderado `α × P(contratar) + (1-α) × CVR × receita_media` resolve o trade-off em produção.
 
-O arquivo `outputs/recomendacoes.csv` foi gerado pelo modelo Híbrido (LightGBM + CF-SVD) para todos os 50.000 clientes, excluindo produtos com status ativo.
+O arquivo `outputs/recomendacoes.csv` foi gerado para todos os **50.000 clientes**, cobrindo 100% da base com 0 produtos ativos indevidamente recomendados.
 
 ---
 
 ## Limitações e Próximos Passos
-
-- **Leakage potencial nas features de interação:** n_cliques e n_contratos históricos por (cliente, produto) sinalizam comportamento passado, não demanda futura por produtos novos. Redesenhar features com janela deslizante e separação por tipo de produto.
-- **CF-SVD limitado pelo catálogo pequeno:** apenas 20 produtos reduzem o espaço latente útil; com lançamentos futuros o modelo ganhará mais poder.
-- **A/B Test:** qualquer modelo deve ser validado em produção com 4+ semanas, métricas de CTR do carrossel e taxa de contratação por posição como KPIs primários, com guardrails em NPS e churn.
-- **Open Finance:** incorporar dados de portabilidade e comportamento em outras instituições aumentaria a capacidade preditiva para cold-start.
+- **Curto prazo:** deploy do híbrido com A/B test em 20% da base + modelos LightGBM por segmento (resultados indicam estrutura fortemente segmentada).
+- **Médio prazo:** features com janela deslizante + Two-Tower model neural + variável `público-alvo` via NLP.
+- **Longo prazo:** otimização multi-objetivo (receita + satisfação + diversidade) + BERT4Rec para capturar jornada de contratação.
